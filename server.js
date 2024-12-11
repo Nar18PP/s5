@@ -1,108 +1,64 @@
-import express from "express";
-import http from "http";
-import { Server } from "socket.io";
-import cookieParser from "cookie-parser";
+import express, { response } from "express";
 import cors from "cors";
+import { Server } from "socket.io";
+import http from "http";
 import dotenv from "dotenv";
+import cookieParser from "cookie-parser";
 import nodemailer from "nodemailer";
-import mysql from "mysql2";
-import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import { sequelize, connectDB } from "./models/database.js";
+import bcrypt from "bcryptjs";
+import multer from "multer";
+import { fileURLToPath } from "url";
+import path from "path";
+import fs from "fs";
+import sharp from "sharp";
+dotenv.config(); // โหลดไฟล์ .env
 
-// Middleware เพื่อให้ Express รู้จัก JSONd
+const now = new Date();
+const formattedDate = `${now
+  .toLocaleDateString("en-GB")
+  .replace(/\//g, "/")} ${now.toLocaleTimeString("en-GB")}`;
+
 const app = express();
-app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.get("/set-cookie", (req, res) => {
-  // สร้างคุกกี้ 'name' มีค่า 'value' และหมดอายุใน 1 วัน
-  res.cookie("name", "value", { maxAge: 24 * 60 * 60 * 1000 }); // 1 วัน (มิลลิวินาที)
-  res.send("คุกกี้ถูกสร้างแล้ว");
-});
+app.use(
+  cors({
+    origin: "http://localhost:5173", // ใส่ URL ของ frontend ที่อนุญาต
+  })
+);
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ให้บริการไฟล์ในโฟลเดอร์ uploads
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 const server = http.createServer(app);
+// Socket.IO CORS การตั้งค่าเฉพาะ
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: "http://localhost:5173", // Frontend origin
   },
 });
-dotenv.config();
 
-// ตั้งค่าการเชื่อมต่อ MySQL
-const conn = mysql.createConnection({
-  host: process.env.LOCALHOSTDB,
-  user: process.env.USERDB,
-  password: process.env.PASSDB,
-  database: process.env.NAMEDB,
-});
+const PORT = process.env.PORT || 3002;
 
-// เชื่อมต่อกับฐานข้อมูล
-conn.connect((err) => {
-  if (err) {
-    console.error("Error connecting to MySQL:", err.message);
-    return;
-  }
-  console.log("Connected to MySQL");
-});
+// เชื่อมต่อฐานข้อมูล
+connectDB();
 
-const validateEmail = (email) => {
-  const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return regex.test(email);
-};
-
-// ฟังก์ชันสำหรับแฮชรหัสผ่าน
-async function hashPassword(password) {
-  const saltRounds = 12; // จำนวนรอบในการสร้าง salt (ค่าแนะนำคือ 10 ขึ้นไป)
-  const hashedPassword = await bcrypt.hash(password, saltRounds);
-  return hashedPassword;
-}
-// ฟังก์ชันสำหรับตรวจสอบรหัสผ่าน
-async function comparePassword(inputPassword, hashedPassword) {
-  const match = await bcrypt.compare(inputPassword, hashedPassword);
-  return match; // จะคืนค่าเป็น true หากตรงกัน และ false หากไม่ตรงกัน
-}
-
-let inter1 = {};
-let interval1 = {};
-let countUser1 = {};
-
-const insertSql = (tableName, columns, values) => {
-  const columnsStr = columns.join(", "); // รวมชื่อคอลัมน์เป็นสตริง
-  const valuesStr = values.join(", "); // จัดรูปแบบและรวมค่าต่าง ๆ เป็นสตริงพร้อมฟอร์แมต
-
-  const sql = `INSERT INTO ${tableName} (${columnsStr}) VALUES (${valuesStr});`;
-  return sql;
-};
-const selectSql = (tbname, columns, wheres) => {
-  const column = columns.join(", ");
-  const where = wheres.join(", ");
-  const sql = `SELECT ${column} FROM ${tbname} WHERE ${where}`;
-  return sql;
-};
-const updateSql = (tbname, columns, values, wheres) => {
-  const column = columns.join(", ");
-  const value = values.join(", ");
-  const where = wheres.join(", ");
-
-  const sql = `UPDATE ${tbname} SET ${column} = ${value} WHERE ${where}`;
-  return sql;
-};
-const deleteSql = (tbname, wheres) => {
-  const where = wheres.join(", ");
-
-  const sql = `DELETE FROM ${tbname} WHERE ${where}`;
-  return sql;
-};
-
-// กำหนดค่า transporter สำหรับ nodemailer
+// ตั้งค่าตัวส่งอีเมล
 const transporter = nodemailer.createTransport({
-  service: "gmail", // หรือใช้ 'smtp.gmail.com' หากไม่ระบุ service
+  service: "gmail", // ใช้บริการของ Gmail หรือสามารถใช้บริการอื่นๆ
   auth: {
-    user: process.env.EMAIL_USER, // ที่อยู่อีเมลของคุณ
-    pass: process.env.EMAIL_PASS, // รหัสผ่านหรือ App password ของคุณ
+    user: process.env.EMAIL_USER, // ใส่อีเมลของคุณ
+    pass: process.env.EMAIL_PASS, // ใส่รหัสผ่านของคุณ
   },
 });
 // ฟังก์ชันส่งอีเมล
-const sendEmail = async (email, socket, status) => {
+const sendEmail = async (email, socket, response) => {
   const otp = Math.floor(Math.random() * (999999 - 100000 + 1)) + 100000;
 
   const mailOptions1 = {
@@ -111,502 +67,529 @@ const sendEmail = async (email, socket, status) => {
     subject: `ຢືນຢັນ OTP ຂອງທ່ານ`,
     text: `ລະຫັດ OTP ຂອງທ່ານຄື: ${otp}`,
   };
-  const mailOptions2 = {
-    from: `Foraling <${process.env.EMAIL_USER}>`,
-    to: email,
-    subject: `ຢືນຢັນ OTP ຂອງທ່ານສຳລັບປ່ຽນລະຫັດຜ່ານ`,
-    text: `ລະຫັດ OTP ຂອງທ່ານຄື: ${otp}`,
-  };
+
   try {
-    if (status === "sendOtpRegister") {
-      await transporter.sendMail(mailOptions1);
-      socket.emit("showAlert", `ສົ່ງລະຫັດ OTP ໄປທີ່ ${email}`, "success");
-      countdown1(email, socket);
-      socket.emit("sendMailed", email);
-      addOtp(email, otp, socket);
-      socket.emit("setBtnSend", false);
-    } else if (status === "sendOtpResetPwd") {
-      await transporter.sendMail(mailOptions2);
-      socket.emit("showAlert", `ສົ່ງລະຫັດ OTP ໄປທີ່ ${email}`, "success");
-      countdown1(email, socket);
-      socket.emit("sendMailed", email);
-      const sql = updateSql("user", ["user_otp"], ["?"], ["user_email = ?"]);
-      conn.query(sql, [otp, email], (err, sult) => {
-        if (err) {
-          socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
-        }
-      });
-      socket.emit("setBtnSend", false);
+    await transporter.sendMail(mailOptions1);
+
+    const [result1] = await sequelize.query(
+      "INSERT INTO person (person_email, person_otp) values(?, ?)",
+      {
+        replacements: [email, otp],
+      }
+    );
+    if (result1) {
+      onCountEmail(email, socket);
+      response("sendMailSuccess");
     }
   } catch (err) {
-    socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
-    socket.emit("setBtnSend", false);
+    response("sendMailError");
   }
 };
 
-const countdown1 = (email, socket) => {
-  if (interval1[email]) {
-    return;
-  }
-  countUser1[email] = 60;
+const validateEmail = (email) => {
+  const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return regex.test(email);
+};
 
-  interval1[email] = setInterval(() => {
-    countUser1[email] -= 1;
-    console.log(countUser1);
-    socket.emit("countSendOtp", countUser1[email]);
-    if (countUser1[email] <= 0) {
-      socket.emit("countSendOtp", "Send");
-      delOtp(email, socket);
-      const sql = updateSql("user", ["user_otp"], ["?"], ["user_email = ?"]);
-      conn.query(sql, ["", email], (err, sult) => {
-        if (err) {
-          socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
+const UPLOAD_FOLDER = path.join(__dirname, "uploads");
+// สร้างโฟลเดอร์ถ้ายังไม่มี
+if (!fs.existsSync(UPLOAD_FOLDER)) {
+  fs.mkdirSync(UPLOAD_FOLDER);
+}
+
+// ตั้งค่าการเก็บไฟล์ที่อัปโหลด
+const storage = multer.memoryStorage(); // เก็บไฟล์ในหน่วยความจำ
+
+const upload = multer({ storage: storage });
+
+// สร้าง route สำหรับการรับไฟล์
+app.post("/upload", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).send("ไม่มีไฟล์ที่อัปโหลด");
+    }
+
+    const outputFileName = Date.now() + ".webp";
+    const outputFilePath = path.join(__dirname, "uploads", outputFileName);
+
+    // const [result] = await sequelize.query(
+    //   "SELECT store_image FROM store WHERE person_id = ?",
+    //   {
+    //     replacements: [req.body.userId],
+    //   }
+    // );
+
+    const [result] = await sequelize.query(
+      "SELECT person_id FROM store WHERE person_id = ?",
+      {
+        replacements: [req.body.userId],
+      }
+    );
+    if (result.length > 0) {
+      const [result] = await sequelize.query(
+        "SELECT store_image FROM store WHERE person_id = ?",
+        {
+          replacements: [req.body.userId],
         }
-      });
-      clearInterval(interval1[email]);
-      interval1[email] = null;
-      delete interval1[email];
-      delete countUser1[email];
-    }
-  }, 1000);
-};
-
-const addOtp = (email, otp, socket) => {
-  const sql = "INSERT INTO user (user_email, user_otp) values(?, ?)";
-  conn.query(sql, [email, otp], (err, result) => {
-    if (err) {
-      socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
-    }
-  });
-};
-const delOtp = (email, socket) => {
-  const sql = "DELETE FROM user WHERE user_email = ? AND user_fname IS NULL";
-  conn.query(sql, [email], (err, result) => {
-    if (err) {
-      socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
-    } else if (result) {
-    }
-  });
-};
-
-app.get("/api/products", (req, res) => {
-  const products = [
-    {
-      id: 1,
-      name: "ຜັດໄກ່23",
-      heart: 957,
-      price: 67,
-      img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTzb0IFD9i42VcxKBRLdtzQsQHEKrXWJuqBEw&s",
-    },
-    {
-      id: 2,
-      name: "ເບີເກີ່",
-      heart: 1520,
-      price: 38,
-      img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQBZL-_s71i1m6RLSIIfxfg0D9rR91Z8MLLbQ&s",
-    },
-    {
-      id: 3,
-      name: "ຍຳທະເລ",
-      heart: 541,
-      price: 163,
-      img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRUPZ8Hv38DtbZs2gqhTLkKT-MgbmHTHpdHVw&s",
-    },
-    {
-      id: 4,
-      name: "ຍຳສະລັດ",
-      heart: 5971,
-      price: 29,
-      img: "https://images.pexels.com/photos/2097090/pexels-photo-2097090.jpeg?auto=compress&cs=tinysrgb&w=600",
-    },
-    {
-      id: 5,
-      name: "ສະມູດຕີ່",
-      heart: 1672,
-      price: 54,
-      img: "https://images.pexels.com/photos/1092730/pexels-photo-1092730.jpeg?auto=compress&cs=tinysrgb&w=600",
-    },
-    {
-      id: 6,
-      name: "ເຄັກຊອກໂກແລັດ",
-      heart: 541,
-      price: 210,
-      img: "https://images.pexels.com/photos/291528/pexels-photo-291528.jpeg?auto=compress&cs=tinysrgb&w=600",
-    },
-    {
-      id: 7,
-      name: "ຊີ້ນໝາ",
-      heart: 662,
-      price: 56,
-      img: "https://images.pexels.com/photos/361184/asparagus-steak-veal-steak-veal-361184.jpeg?auto=compress&cs=tinysrgb&w=600",
-    },
-    {
-      id: 8,
-      name: "ຊູຊິ",
-      heart: 25563,
-      price: 156,
-      img: "https://images.pexels.com/photos/357756/pexels-photo-357756.jpeg?auto=compress&cs=tinysrgb&w=600",
-    },
-    {
-      id: 9,
-      name: "ຊີ້ນງົວ",
-      heart: 954,
-      price: 84,
-      img: "https://images.pexels.com/photos/793785/pexels-photo-793785.jpeg?auto=compress&cs=tinysrgb&w=600https://images.pexels.com/photos/769290/pexels-photo-769290.jpeg?auto=compress&cs=tinysrgb&w=600",
-    },
-    {
-      id: 10,
-      name: "ໄຂ່ຕົ້ມ",
-      heart: 2359,
-      price: 59,
-      img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRUPZ8Hv38DtbZs2gqhTLkKT-MgbmHTHpdHVw&s",
-    },
-    {
-      id: 11,
-      name: "ພິດຊ່າ",
-      heart: 587,
-      price: 85,
-      img: "https://images.pexels.com/photos/2147491/pexels-photo-2147491.jpeg?cs=srgb&dl=pexels-vince-2147491.jpg&fm=jpg",
-    },
-  ];
-  res.json(products);
-});
-
-io.on("connection", (socket) => {
-  console.log(socket.id);
-
-  socket.on("sendOtp", (email, status) => {
-    if (!email) {
-      socket.emit("showAlert", `ປ້ອນຂໍ້ມູນກ່ອນ`, "error");
-      return;
-    }
-    if (!validateEmail(email)) {
-      socket.emit("showAlert", `ອີເມວບໍ່ຖືກຕ້ອງ`, "error");
-      return;
-    }
-    if (status === "sendOtpRegister") {
-      const sql = selectSql("user", ["user_email"], ["user_email = ?"]);
-      conn.query(sql, [email], (err, result) => {
-        if (result.length >= 1) {
-          socket.emit("showAlert", `ມີຜູ້ໃຊ້ອີເມວນີ້ແລ້ວ`, "error");
-          socket.emit("setBtnSend", false);
-          return;
-        }
-        socket.emit("setBtnSend", true);
-        sendEmail(email, socket, status);
-      });
-    } else if (status === "sendOtpResetPwd") {
-      const sql = selectSql(
-        "user",
-        ["user_email, user_fname"],
-        ["user_email = ? AND user_fname IS NOT NULL"]
       );
-      conn.query(sql, [email], (err, sult) => {
-        if (err) {
-          socket.emit("setBtnSend", false);
-          socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
-        }
-        if (sult.length >= 1) {
-          socket.emit("setBtnSend", true);
-          sendEmail(email, socket, status);
-        } else {
-          socket.emit("setBtnSend", false);
-          socket.emit("showAlert", `ອີເມວບໍ່ຖືກຕ້ອງ`, "error");
-        }
-      });
-    }
-  });
-
-  socket.on("requestCountSendOtp1", (email) => {
-    if (countUser1[email]) {
-      if (inter1[email]) {
-        clearInterval(inter1[email]);
-        inter1[email] = null;
-        delete inter1[email];
-      }
-
-      inter1[email] = setInterval(() => {
-        socket.emit("countSendOtp", countUser1[email]);
-        if (countUser1[email] <= 1) {
-          setTimeout(() => {
-            socket.emit("countSendOtp1", "Send");
-            delOtp(email, socket);
-          }, 1000);
-
-          clearInterval(inter1[email]);
-          inter1[email] = null;
-          delete inter1[email];
-        }
-      }, 200);
-    }
-  });
-  socket.on("checkOtp", (email, otp) => {
-    if (!email || !otp) {
-      socket.emit("showAlert", `ປ້ອນຂໍ້ມູນໃຫ້ຄົບ`, "error");
-      return;
-    }
-    const sql =
-      "SELECT user_email FROM user WHERE user_email = ? AND user_otp = ?";
-    conn.query(sql, [email, otp], (err, result) => {
-      if (err) {
-        if (err) {
-          socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
-        }
-      }
-      if (result.length >= 1) {
-        socket.emit("checkOtped");
-      } else {
-        socket.emit("showAlert", `ລະຫັດ OTP ບໍ່ຖືກຕ້ອງ`, "error");
-      }
-    });
-  });
-  socket.on("inputUsername", (username, age) => {
-    if (username && age) {
-      if (username.length >= 3) {
-        const sql = "SELECT user_username FROM user WHERE user_username = ?";
-        conn.query(sql, [username], (err, result) => {
-          if (err) {
-            socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
+      if (result.length > 0) {
+        const [result1] = await sequelize.query(
+          "UPDATE store SET store_image = ? WHERE person_id = ?",
+          {
+            replacements: [outputFileName, req.body.userId],
           }
-          if (result.length >= 1) {
-            socket.emit("showAlert", `ມີຜູ້ໃຊ້ຊື່ນີ້ແລ້ວ`, "error");
-          } else {
-            socket.emit("inputUsernamed");
-          }
-        });
-      } else {
-        socket.emit("showAlert", `Username ຕ້ອງມີ 3 ຕົວຂື້ນໄປ`, "error");
-      }
-    } else {
-      socket.emit("showAlert", `ປ້ອນຂໍ້ມູນໃຫ້ຄົບ`, "error");
-    }
-  });
-  socket.on("inputName", (fname, lname) => {
-    if (fname && lname) {
-      if (fname.length >= 3 && lname.length >= 3) {
-        socket.emit("inputNamed");
-      } else {
-        socket.emit("showAlert", `ຕ້ອງມີ 3 ຕົວຂື້ນໄປ`, "error");
-      }
-    } else {
-      socket.emit("showAlert", `ປ້ອນຂໍ້ມູນໃຫ້ຄົບ`, "error");
-    }
-  });
-  socket.on(
-    "lastStep",
-    (password1, password2, email, firstName, lastName, username, age) => {
-      if (password1.length >= 6) {
-        if (password1 === password2) {
-          const sql = selectSql(
-            "user",
-            ["*"],
-            ["user_email = ? AND user_fname IS NOT NULL"]
-          );
-          conn.query(sql, [email], (err, result) => {
+        );
+        const OldNameImg = result[0].store_image;
+        const filePath = path.join(__dirname, "uploads", OldNameImg);
+        console.log(OldNameImg);
+        if (fs.existsSync(filePath)) {
+          fs.unlink(filePath, (err) => {
             if (err) {
-              socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
-            }
-            if (result.length >= 1) {
-              socket.emit("showAlert", `ມີຜູ້ໃຊ້ອີເມວແລ້ວ`, "error");
+              console.error("เกิดข้อผิดพลาดในการลบไฟล์:", err);
             } else {
-              const sql = selectSql("user", ["*"], [" user_username = ?"]);
-              conn.query(sql, [username], (err, result) => {
-                if (err) {
-                  socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
-                }
-                if (result.length >= 1) {
-                  socket.emit("showAlert", `ມີຜູ້ໃຊ້ Username ແລ້ວ`, "error");
-                } else {
-                  const sql = insertSql(
-                    "user",
-                    [
-                      "user_fname",
-                      "user_lname",
-                      "user_username",
-                      "user_age",
-                      "user_email",
-                      "user_password",
-                    ],
-                    ["?", "?", "?", "?", "?", "?"]
-                  );
-                  hashPassword(password1).then((hashedPassword) => {
-                    conn.query(
-                      sql,
-                      [
-                        firstName,
-                        lastName,
-                        username,
-                        age,
-                        email,
-                        hashedPassword,
-                      ],
-                      (err, result) => {
-                        if (err) {
-                          console.log(err);
-                          socket.emit(
-                            "showAlert",
-                            `ມີຂໍ້ຜິດພາດເກີດຂື້ນ${err}`,
-                            "error"
-                          );
-                        }
-                        if (result) {
-                          socket.emit("showAlert", `ລົງທະບຽນສຳເລັດ`, "success");
-                          socket.emit("setDisBtn", true);
-                          if (interval1[email]) {
-                            delOtp(email, socket);
-                            clearInterval(interval1[email]);
-                            interval1[email] = null;
-                            delete countUser1[email];
-                            delete interval1[email];
-                          }
-                          if (inter1[email]) {
-                            clearInterval(inter1[email]);
-                            inter1[email] = null;
-                            delete inter1[email];
-                          }
-                          setTimeout(() => {
-                            socket.emit("signUped");
-                            socket.emit("setDisBtn", false);
-                          }, 3000);
-                        }
-                      }
-                    );
-                  });
-                }
-              });
+              console.log("ลบไฟล์สำเร็จ:", filePath);
             }
           });
-        } else {
-          socket.emit("showAlert", `ລະຫັດຜ່ານບໍ່ຄືກັນ`, "error");
         }
+      }
+    } else {
+      const [result] = await sequelize.query(
+        "INSERT INTO imagetest (image, person_id) value(?, ?)",
+        {
+          replacements: [outputFileName, req.body.userId],
+        }
+      );
+    }
+    await sharp(req.file.buffer).webp().toFile(outputFilePath);
+
+    res.status(200).send({
+      message: "อัปโหลดและแปลงไฟล์สำเร็จ",
+      file: outputFileName,
+      nameImgTest: `${outputFileName}`,
+    });
+  } catch (error) {}
+});
+
+// Endpoint สำหรับการตรวจสอบ token
+app.post("/verify-token", (req, res) => {
+  const { token } = req.body; // ดึง token จาก body ของ request
+  if (!token) {
+    return res
+      .status(401)
+      .json({ status: "invalid", message: "No token provided" });
+  }
+
+  // ใช้ jwt.verify() เพื่อตรวจสอบ token
+  jwt.verify(token, "secretkey", async (err, decoded) => {
+    if (err) {
+      return res
+        .status(401)
+        .json({ status: "invalid", message: "Invalid or expired token" });
+    }
+
+    // ถ้า token valid, ส่งข้อมูลที่ decode มาให้ client
+    const [result] = await sequelize.query(
+      "SELECT person_id FROM person WHERE (person_email = ? OR person_username = ?)",
+      {
+        replacements: [decoded.username, decoded.username],
+      }
+    );
+    res.json({
+      status: "valid",
+      decoded,
+      userId: result[0].person_id,
+    });
+  });
+});
+
+let countEmail = [];
+let intervalCountEmail = [];
+
+const onCountEmail = async (email, socket) => {
+  if (intervalCountEmail[email]) {
+    return; // ถ้ามีการนับอยู่แล้วไม่ต้องเริ่มใหม่
+  }
+  try {
+    countEmail[email] = 30; // กำหนดเวลาเริ่มต้น 15 วินาที
+
+    intervalCountEmail[email] = setInterval(() => {
+      countEmail[email] -= 1;
+      socket.emit("countOtp", { countOtp: countEmail[email] });
+      console.log(`Email: ${email}, Time left: ${countEmail[email]}`);
+
+      if (countEmail[email] <= 0) {
+        sequelize.query(
+          "DELETE FROM person where person_email = ? and person_fname IS NULL",
+          {
+            replacements: [email],
+          }
+        );
+        clearInterval(intervalCountEmail[email]);
+        delete intervalCountEmail[email];
+        delete countEmail[email];
+      }
+    }, 1000);
+  } catch (error) {}
+};
+
+const sqlSelStoretAllAndLike = `SELECT 
+           s.*, CASE 
+             WHEN l.person_id IS NOT NULL THEN true 
+             ELSE false 
+           END AS is_liked 
+         FROM store s 
+         LEFT JOIN likedshops l 
+           ON s.store_id = l.store_id AND l.person_id = ?;`;
+const sqlSelStoreAllLike = `SELECT 
+  s.*, 
+  true AS is_liked
+FROM store s
+INNER JOIN likedshops l
+  ON s.store_id = l.store_id
+WHERE l.person_id = ?;`;
+const sqlSelStoretAll = "SELECT * FROM store";
+
+const sqlSelMystore = `SELECT 
+  s.*, 
+  CASE 
+    WHEN EXISTS (
+      SELECT 1 
+      FROM likedshops l 
+      WHERE l.store_id = s.store_id AND l.person_id = ?
+    ) THEN true 
+    ELSE false 
+  END AS is_liked 
+FROM store s 
+WHERE s.store_id = ?;
+`;
+
+io.on("connection", (socket) => {
+  socket.on("reqDataStoreAll", async (userId) => {
+    if (userId) {
+      const [resultStoreAllAndLike] = await sequelize.query(
+        sqlSelStoretAllAndLike,
+        {
+          replacements: [userId],
+        }
+      );
+      const [resultStoreAllLike] = await sequelize.query(sqlSelStoreAllLike, {
+        replacements: [userId],
+      });
+
+      if (resultStoreAllAndLike && resultStoreAllLike) {
+        // ส่งข้อมูลร้านพร้อมสถานะการกดใจ
+        socket.emit("resDataStoreAll", {
+          resDataStoreAll: resultStoreAllAndLike,
+          resDataStoreAllLike: resultStoreAllLike,
+        });
+      }
+    } else {
+      const [result] = await sequelize.query(sqlSelStoretAll);
+      if (result) {
+        // ส่งข้อมูลร้านทั้งหมด
+        socket.emit("resDataStoreAll", { resDataStoreAll: result });
+      }
+    }
+  });
+
+  console.log(`User connected: ${socket.id}`);
+
+  socket.on("checkUsernameRegister", async (inputUsername, response) => {
+    try {
+      const [result] = await sequelize.query(
+        "SELECT person_username FROM person WHERE person_username = ?",
+        {
+          replacements: [inputUsername],
+        }
+      );
+
+      if (result.length > 0) {
+        response("failed");
       } else {
-        socket.emit("showAlert", `ລະຫັດຜ່ານຕ້ອງມີ 6 ຕົວຂື້ນໄປ`, "error");
+        response("success");
+      }
+    } catch (error) {}
+  });
+  socket.on("checkEmail", async (email, response) => {
+    if (validateEmail(email)) {
+      const [result] = await sequelize.query(
+        "SELECT person_email FROM person WHERE person_email = ?",
+        {
+          replacements: [email],
+        }
+      );
+      if (result.length > 0) {
+        response("have an email");
+      } else {
+        sendEmail(email, socket, response);
+      }
+    } else {
+      response("failed");
+    }
+  });
+  // เมื่อ client ขอเวลาที่เหลือ
+  socket.on("requestCountOtp", (email) => {
+    if (countEmail[email]) {
+      socket.emit("countOtp", { countOtp: countEmail[email] });
+    } else {
+      socket.emit("countOtp", { countOtp: 0 }); // ไม่มีการนับคืนค่า 0
+    }
+  });
+  //checkEmailandOtp
+  socket.on("checkEmailandOtp", async (email, otp, response) => {
+    const [result] = await sequelize.query(
+      "SELECT person_email, person_otp FROM person where person_email = ? and person_otp = ?",
+      {
+        replacements: [email, otp],
+      }
+    );
+    if (result.length > 0) {
+      response("checkSuccess");
+    } else {
+      response("checkFailed");
+    }
+  });
+  //checkPassword
+  socket.on(
+    "insertPersonRegis",
+    async (fname, lname, username, gender, email, password, response) => {
+      const [result] = await sequelize.query(
+        "SELECT person_email FROM person where person_email = ? and person_fname IS NOT NULL",
+        {
+          replacements: [email],
+        }
+      );
+      if (result.length > 0) {
+        response("have an email");
+      } else {
+        const [result] = await sequelize.query(
+          "SELECT person_username FROM person where person_username = ? and person_fname IS NOT NULL",
+          {
+            replacements: [username],
+          }
+        );
+        if (result.length > 0) {
+          response("have a username");
+        } else {
+          if ((fname, lname, username, gender, email, password)) {
+            const saltRounds = 12;
+            const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+            const [result] = await sequelize.query(
+              "INSERT INTO person (person_fname, person_lname, person_username, person_gender, person_email, person_password) values(?, ?, ?, ?, ?, ?)",
+              {
+                replacements: [
+                  fname,
+                  lname,
+                  username,
+                  gender,
+                  email,
+                  hashedPassword,
+                ],
+              }
+            );
+            if (result) {
+              response("inserted");
+            } else {
+              response("insertFailed");
+            }
+          } else {
+            response("insertFailed");
+          }
+        }
       }
     }
   );
-  socket.on("newPassword", (email, password1, password2) => {
-    if (!password1 || !password2) {
-      socket.emit("showAlert", `ປ້ອນຂໍ້ມູນໃຫ້ຄົບ`, "error");
-      return;
+  socket.on("login", async (email, password, response) => {
+    const [result] = await sequelize.query(
+      "SELECT person_email, person_username, person_password FROM person WHERE (person_email = ? OR person_username = ?)",
+      {
+        replacements: [email, email, password],
+      }
+    );
+    if (result.length > 0) {
+      const hashedPassword = result[0].person_password;
+      const isPasswordValid = await bcrypt.compare(password, hashedPassword);
+      if (isPasswordValid) {
+        const token = jwt.sign(
+          { username: email, password: password },
+          "secretkey",
+          { expiresIn: "1h" }
+        );
+        response({ status: "loginSuccess", token: token });
+      } else {
+        response("incorrectPassword");
+      }
+    } else {
+      response("userNotFound");
     }
-    if (password1.length < 6) {
-      socket.emit("showAlert", `ລະຫັດຜ່ານຕ້ອງມີ 6 ຕົວຂື້ນໄປ`, "error");
-      return;
+  });
+  socket.on("requestIdstore", async (userId, response) => {
+    const [resultStoreId] = await sequelize.query(
+      "SELECT * FROM store WHERE person_id = ?",
+      {
+        replacements: [userId],
+      }
+    );
+    if (resultStoreId && resultStoreId.length > 0) {
+      const storeId = resultStoreId[0].store_id;
+      if (resultStoreId.length > 0) {
+        response({ storeId: storeId });
+      }
     }
-    if (password1 !== password2) {
-      socket.emit("showAlert", `ລະຫັດຜ່ານບໍ່ຄືກັນ`, "error");
-      return;
-    }
-    const sql = updateSql("user", ["user_password"], ["?"], ["user_email = ?"]);
-    hashPassword(password1).then((hashedPassword) => {
-      conn.query(sql, [hashedPassword, email], (e, s) => {
-        if (e) {
-          socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
-        } else if (s) {
-          socket.emit("showAlert", `ປ່ຽນລະຫັດຜ່ານສຳເລັດແລ້ວ`, "success");
-          socket.emit("setDisBtn", true);
-          if (interval1[email]) {
-            clearInterval(interval1[email]);
-            interval1[email] = null;
-            delete countUser1[email];
-            delete interval1[email];
-          }
-          if (inter1[email]) {
-            clearInterval(inter1[email]);
-            inter1[email] = null;
-            delete inter1[email];
-          }
-          setTimeout(() => {
-            socket.emit("setDisBtn", false);
-            socket.emit("changePwded");
-          }, 2000);
-        }
+  });
+  socket.on("requestDataMystore", async (userId, storeId, response) => {
+    if(storeId){
+      const [resultMystore] = await sequelize.query(sqlSelMystore, {
+        replacements: [userId, storeId],
       });
+      if (resultMystore) {
+        response({ dataMystore: resultMystore });
+        console.log(resultMystore)
+      }
+    }
+  });
+  socket.on("requestDataPrivate", async (userId, response) => {
+    const [result] = await sequelize.query(
+      "SELECT * FROM person WHERE person_id = ?",
+      {
+        replacements: [userId],
+      }
+    );
+    response({
+      fname: result[0].person_fname,
+      lname: result[0].person_lname,
+      email: result[0].person_email,
+      username: result[0].person_username,
+      like: result[0].person_like,
+      view: result[0].person_view,
+      coin: result[0].person_coin,
     });
   });
-  socket.on("onSignIn", (email, password) => {
-    if (!email) {
-      socket.emit("showAlert", `ປ້ອນຂໍ້ມູນກ່ອນ`, "error");
-      return;
-    }
-    if (validateEmail(email)) {
-      const sql = "SELECT user_id, user_password FROM user WHERE user_email = ?";
-      conn.query(sql, [email], (err, sult) => {
-        if (err) {
-          socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
+  socket.on("onLike", async (shopId, userId, response) => {
+    // ประกาศตัวแปร result ไว้ข้างนอก
+
+    const [countResult] = await sequelize.query(
+      `SELECT COUNT(*) as count FROM likedshops WHERE person_id = ? AND store_id = ?;`,
+      {
+        replacements: [userId, shopId],
+      }
+    );
+
+    // ตรวจสอบค่าผลลัพธ์
+    if (countResult && countResult[0].count > 0) {
+      // หากมีการกดใจร้านแล้ว ให้ลบการกดใจ
+      const [result] = await sequelize.query(
+        `DELETE FROM likedshops WHERE person_id = ? AND store_id = ?`,
+        {
+          replacements: [userId, shopId],
         }
-        if (sult.length >= 1) {
-          const hashedPassword = sult[0].user_password;
-          const user_id = sult[0].user_id;
-          comparePassword(password, hashedPassword).then((isMatch) => {
-            if (isMatch) {
-              socket.emit("showAlert", `ເຂົ້າສູ່ລະບົບສຳເລັດແລ້ວ`, "success");
-              socket.emit('setDisBtn', true);
-              setTimeout(() => {
-                socket.emit('setDisBtn', false);
-                socket.emit('signIned', user_id);
-              }, 2000);
-            } else {
-              socket.emit("showAlert", `ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ`, "error");
-            }
+      );
+      if (result) {
+        const [resultStoreAllAndLike] = await sequelize.query(
+          sqlSelStoretAllAndLike,
+          {
+            replacements: [userId],
+          }
+        );
+        const [resultStoreAllLike] = await sequelize.query(sqlSelStoreAllLike, {
+          replacements: [userId],
+        });
+        const [resultMystore] = await sequelize.query(sqlSelMystore, {
+          replacements: [userId, shopId],
+        });
+
+        if (resultStoreAllAndLike && resultStoreAllLike) {
+          // ส่งข้อมูลร้านพร้อมสถานะการกดใจ
+          response({
+            resDataStoreAll: resultStoreAllAndLike,
+            resDataStoreAllLike: resultStoreAllLike,
+            resDataLikeInStore: resultMystore,
           });
-        }else{
-          socket.emit("showAlert", `ບໍ່ພົບຜູ້ໃຊ້ນີ້`, "error");
         }
-      });
-      return;
+      }
     } else {
-      const sql = "SELECT user_id, user_password FROM user WHERE user_username = ?";
-      conn.query(sql, [email], (err, sult) => {
-        if (err) {
-          socket.emit("showAlert", `ມີຂໍ້ຜິດພາດເກີດຂື້ນ`, "error");
+      // หากยังไม่มีการกดใจร้าน ให้เพิ่มการกดใจ
+      const [result] = await sequelize.query(
+        `INSERT INTO likedshops (person_id, store_id, likeshops_date) VALUES(?, ?, ?)`,
+        {
+          replacements: [userId, shopId, formattedDate],
         }
-        if (sult.length >= 1) {
-          const hashedPassword = sult[0].user_password;
-          const user_id = sult[0].user_id;
-          comparePassword(password, hashedPassword).then((isMatch) => {
-            if (isMatch) {
-              socket.emit("showAlert", `ເຂົ້າສູ່ລະບົບສຳເລັດແລ້ວ`, "success");
-              socket.emit('setDisBtn', true);
-              setTimeout(() => {
-                socket.emit('setDisBtn', false);
-                socket.emit('signIned', user_id);
-              }, 2000);
-            } else {
-              socket.emit("showAlert", `ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ`, "error");
-            }
+      );
+      if (result) {
+        const [resultStoreAllAndLike] = await sequelize.query(
+          sqlSelStoretAllAndLike,
+          {
+            replacements: [userId],
+          }
+        );
+        const [resultStoreAllLike] = await sequelize.query(sqlSelStoreAllLike, {
+          replacements: [userId],
+        });
+        const [resultMystore] = await sequelize.query(sqlSelMystore, {
+          replacements: [userId, shopId],
+        });
+
+        if (resultStoreAllAndLike.length > 0 && resultStoreAllLike.length > 0) {
+          // ส่งข้อมูลร้านพร้อมสถานะการกดใจ
+          response({
+            resDataStoreAll: resultStoreAllAndLike,
+            resDataStoreAllLike: resultStoreAllLike,
+            resDataLikeInStore: resultMystore,
           });
-        }else{
-          socket.emit("showAlert", `ບໍ່ພົບຜູ້ໃຊ້ນີ້`, "error");
         }
-      });
-      return;
+      }
     }
   });
 
-  //toHome
-  socket.on('toHome', (cookieUser)=>{
-    const userId = socket.handshake.query.user_id; // ดึงค่า user_id จาก query
-    console.log('User connected with ID:', userId);
+  socket.on(
+    "createStore",
+    async (userId, inputName, inputDetail, nameImg, response) => {
+      try {
+        const [result] = await sequelize.query(
+          "INSERT INTO store (store_name, store_detail, store_image, store_creationdate ,person_id) VALUES (?, ?, ?, ?, ?)",
+          {
+            replacements: [
+              inputName,
+              inputDetail,
+              nameImg,
+              formattedDate,
+              userId,
+            ],
+          }
+        );
 
-    const sql = 'SELECT * FROM user WHERE user_id = ?';
-    conn.query(sql, [cookieUser], (err, sult)=>{
-      if(err){
-        
+        if (result) {
+          response({ status: "createSuccess" });
+          const [resultStoreAllAndLike] = await sequelize.query(
+            sqlSelStoretAllAndLike,
+            {
+              replacements: [userId],
+            }
+          );
+
+          if (resultStoreAllAndLike) {
+            // ส่งข้อมูลร้านพร้อมสถานะการกดใจ
+            io.emit("resDataStoreAll", {
+              resDataStoreAll: resultStoreAllAndLike,
+            });
+          }
+        } else {
+          response({ status: "error" });
+        }
+      } catch (error) {
+        console.error("Error creating store:", error);
+        response({ status: "error", message: error.message });
       }
-      if(sult){
-        socket.emit('showTbUser', sult);
-      }
-    })
-  })
+    }
+  );
 
   socket.on("disconnect", () => {
-    console.log("User disconected", socket.id); // แสดงข้อความเมื่อผู้ใช้ตัดการเชื่อมต่อ
+    console.log(`User disconnected: ${socket.id}`);
   });
 });
 
-// Start the server
-const PORT = process.env.PORT || 3000;
+// Start server
 server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on http://localhost:${PORT}`);
 });
